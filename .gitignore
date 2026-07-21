@@ -1,14 +1,17 @@
 # Your real API key lives here — never commit this file.
 .env
 
-# Saved custom-instruction presets are local/personal, not part of the app itself.
+# Locally saved, personal data — not part of the app itself.
 presets.json
+brand_profiles.json
+history.json
 
 # Python cruft
 __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
 
 # Streamlit
 .streamlit/secrets.toml

@@ -60,11 +60,22 @@ If the user provides product images, look at them carefully and describe what yo
 genuinely see (colour, material, shape, styling, setting) so the copy is accurate \
 and vivid. Do not contradict the images.
 
+# Titles and bullets (only when asked for)
+
+If asked for a title, write one that front-loads the most important keywords and \
+stays within the given character limit, exactly as a real seller would optimise it. \
+If asked for feature bullets, write exactly 5, each leading with the concrete \
+feature followed by its benefit (FAB), no filler bullets.
+
+# Translations (only when asked for)
+
+If asked to also write a version in another language, that version must be a \
+confident native rewrite in the target language and the requested voice, not a \
+literal machine translation. Keep it accurate to the same product details.
+
 # Output
 
-Return your answer using the required JSON format: an object with a "variations" \
-array of complete, ready-to-paste descriptions. Each variation should be a distinct \
-take, not a trivial reword of the last."""
+Return your answer using the required JSON format."""
 
 
 # ---------------------------------------------------------------------------
@@ -117,15 +128,45 @@ LENGTHS = {
 }
 
 
+# Rough, commonly-cited title length guidelines per platform. These are
+# GUIDELINES, not hard platform rules (real limits vary by category/region),
+# shown in the UI as a friendly character counter, not an enforced cutoff.
+PLATFORM_TITLE_LIMITS = {
+    "Etsy": 140,
+    "Amazon": 200,
+    "Shopify / own store": 70,
+    "eBay": 80,
+    "Real estate listing": 100,
+    "Social caption (Instagram/TikTok)": 125,
+}
+
+
+LANGUAGES = [
+    "Spanish",
+    "Norwegian",
+    "German",
+    "French",
+    "Portuguese",
+    "Italian",
+    "Dutch",
+    "Swedish",
+    "Danish",
+    "Polish",
+]
+
+
 def build_user_prompt(
     product_name: str,
     details: str,
     style: str,
     platform: str,
     length: str,
+    brand_profile_text: str,
     custom_instructions: str,
     num_variations: int,
     has_images: bool,
+    include_title_bullets: bool = False,
+    target_language: str | None = None,
 ) -> str:
     """Assemble everything the user chose into one clear instruction block."""
     parts = []
@@ -151,9 +192,31 @@ def build_user_prompt(
     parts.append(f"PLATFORM: {platform}. {PLATFORMS.get(platform, '')}")
     parts.append(f"LENGTH: {LENGTHS.get(length, '')}")
 
+    if include_title_bullets:
+        limit = PLATFORM_TITLE_LIMITS.get(platform, 150)
+        parts.append("")
+        parts.append(
+            f"ALSO WRITE: a title of no more than {limit} characters (front-loaded "
+            "with the most important keywords), and exactly 5 feature bullets "
+            "(feature, then its benefit, no filler)."
+        )
+
+    if target_language:
+        parts.append("")
+        parts.append(
+            f"ALSO WRITE a second version of everything above, fully in "
+            f"{target_language}, as a confident native rewrite (not a literal "
+            "translation), matching the same style and platform."
+        )
+
+    if brand_profile_text.strip():
+        parts.append("")
+        parts.append("BRAND VOICE PROFILE (apply consistently):")
+        parts.append(brand_profile_text.strip())
+
     if custom_instructions.strip():
         parts.append("")
-        parts.append("EXTRA INSTRUCTIONS FROM THE USER (follow these carefully):")
+        parts.append("EXTRA INSTRUCTIONS FOR THIS SPECIFIC PRODUCT:")
         parts.append(custom_instructions.strip())
 
     parts.append("")

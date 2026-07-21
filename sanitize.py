@@ -50,3 +50,25 @@ def strip_ai_tells(text: str) -> str:
 def contains_dash(text: str) -> bool:
     """Quick check used by the UI to prove the guarantee held."""
     return "—" in text or "–" in text
+
+
+def find_banned_words(text: str, banned_words: list[str]) -> list[str]:
+    """Return the banned words that actually appear in text (whole-word, case-insensitive).
+
+    We DETECT rather than silently strip banned words: yanking a whole word out of
+    a sentence can mangle grammar in a way stripping a dash never does, so the
+    honest guarantee here is "we will tell you if one slipped through", not
+    "we will invisibly fix it for you".
+    """
+    if not text or not banned_words:
+        return []
+
+    found = []
+    for word in banned_words:
+        word = word.strip()
+        if not word:
+            continue
+        pattern = r"\b" + re.escape(word) + r"\b"
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            found.append(word)
+    return found
