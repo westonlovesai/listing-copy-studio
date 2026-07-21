@@ -1,0 +1,18 @@
+# Your real API key lives here — never commit this file.
+.env
+
+# Saved custom-instruction presets are local/personal, not part of the app itself.
+presets.json
+
+# Python cruft
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Editor/OS noise
+.DS_Store
+.vscode/
