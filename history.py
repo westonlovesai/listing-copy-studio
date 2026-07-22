@@ -19,7 +19,9 @@ MAX_ENTRIES = 100
 
 def append_entry(entry: dict) -> None:
     """Add one generation to the front of the history, trimmed to MAX_ENTRIES."""
-    entry = {"timestamp": datetime.now().isoformat(timespec="seconds"), **entry}
+    # The real timestamp is spread LAST so it always wins, even if the caller's
+    # entry dict happens to already contain a (stale) "timestamp" key.
+    entry = {**entry, "timestamp": datetime.now().isoformat(timespec="seconds")}
     history = load_history(limit=MAX_ENTRIES - 1)
     history.insert(0, entry)
     HISTORY_FILE.write_text(json.dumps(history, indent=2), encoding="utf-8")

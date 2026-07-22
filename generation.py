@@ -18,12 +18,19 @@ from sanitize import strip_ai_tells
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 
+class GenerationError(Exception):
+    """Raised when Claude's response can't be used: a safety refusal, an empty
+    response, or output that didn't parse as the requested JSON. Callers should
+    show `str(error)` to the user rather than letting a raw StopIteration or
+    JSONDecodeError bubble up as a traceback."""
+
+
 def build_schema(include_title_bullets: bool, target_language: str | None) -> dict:
     """Build the JSON schema Claude's response must match, based on what
     extras the user asked for. Keeping this dynamic means we never ask for
     (or pay tokens for) a translation or bullets nobody wants."""
 
-    def _listing_shape() -> dict:
+    def _listing_shape() -> tuple[dict, list[str]]:
         shape = {
             "variations": {"type": "array", "items": {"type": "string"}},
         }
@@ -110,8 +117,31 @@ def generate_listing(
         output_config={"format": {"type": "json_schema", "schema": schema}},
     )
 
-    raw = next(b.text for b in response.content if b.type == "text")
-    result = json.loads(raw)
+    if response.stop_reason == "refusal":
+        category = None
+        if response.stop_details is not None:
+            category = getattr(response.stop_details, "category", None)
+        raise GenerationError(
+            "Claude declined to write this listing"
+            + (f" (safety category: {category})" if category else "")
+            + ". Try rephrasing the product details or instructions."
+        )
+
+    text_blocks = [b.text for b in response.content if b.type == "text"]
+    if not text_blocks:
+        raise GenerationError(
+            f"Claude's response had no usable text (stop_reason={response.stop_reason!r})."
+        )
+
+    try:
+        result = json.loads(text_blocks[0])
+    except json.JSONDecodeError as e:
+        raise GenerationError(
+            "Claude's response was cut off or malformed and couldn't be read. "
+            "This can happen with a very long request - try fewer versions or a "
+            "shorter length."
+        ) from e
+
     result = _sanitize_result(result)
 
     return result, response.usage

@@ -28,16 +28,6 @@ class BrandProfile(TypedDict):
     extra_instructions: str
 
 
-def _empty_profile() -> BrandProfile:
-    return {
-        "brand_name": "",
-        "tone_description": "",
-        "banned_words": [],
-        "preferred_phrases": [],
-        "extra_instructions": "",
-    }
-
-
 def load_profiles() -> dict[str, BrandProfile]:
     """Return {profile_name: profile_dict} for every saved brand voice."""
     if PROFILES_FILE.exists():

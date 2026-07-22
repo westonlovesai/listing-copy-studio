@@ -12,6 +12,15 @@ Four tabs:
   - Batch (CSV)     : a whole spreadsheet of products at once.
   - Brand Voice     : reusable, structured brand voice profiles.
   - History         : every past single-product generation, so nothing is lost.
+
+A note on session_state: results are stored in st.session_state and rendered
+from there, not just inside the `if st.button(...)` block. Streamlit reruns
+the ENTIRE script on every widget interaction, and a button's clicked-state is
+only True on the exact rerun it was clicked - on any later rerun (say, you
+nudge the length dropdown), it's False again. Anything displayed only inside
+that `if` block would vanish the instant you touched anything else on the
+page. Storing the result in session_state and rendering it unconditionally
+(if present) is what makes it stick around.
 """
 
 import os
@@ -30,9 +39,16 @@ from brand_profiles import (
     save_profile,
 )
 from costs import estimate_cost, format_cost
-from generation import build_image_blocks, generate_listing
+from generation import GenerationError, build_image_blocks, generate_listing
 from history import append_entry, clear_history, load_history
-from prompts import LANGUAGES, LENGTHS, PLATFORM_TITLE_LIMITS, PLATFORMS, STYLES
+from prompts import (
+    LANGUAGES,
+    LENGTHS,
+    PLATFORM_TITLE_LIMITS,
+    PLATFORMS,
+    STYLES,
+    build_user_prompt,
+)
 from sanitize import contains_dash, find_banned_words
 
 load_dotenv()
@@ -67,6 +83,22 @@ if "session_cost" not in st.session_state:
 
 def add_to_session_cost(amount: float) -> None:
     st.session_state.session_cost += amount
+
+
+def handle_generation_error(e: Exception) -> None:
+    """One place to turn a generation failure into a friendly message."""
+    if isinstance(e, anthropic.AuthenticationError):
+        st.error("Your API key was rejected. Check the value in your .env file.")
+    elif isinstance(e, anthropic.RateLimitError):
+        st.error("Rate limited by the API. Wait a moment and try again.")
+    elif isinstance(e, anthropic.APIConnectionError):
+        st.error("Couldn't reach the Anthropic API. Check your internet connection.")
+    elif isinstance(e, GenerationError):
+        st.error(str(e))
+    elif isinstance(e, anthropic.APIError):
+        st.error(f"The API returned an error: {e.message}")
+    else:
+        raise e
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +153,53 @@ def render_variation(text: str, label: str, banned_words: list[str], key: str) -
             mime="text/plain",
             key=f"dl_{key}",
         )
+
+
+def render_listing_result(
+    result: dict,
+    banned_words: list[str],
+    include_title_bullets: bool,
+    platform: str,
+    target_language: str | None,
+    key_prefix: str,
+) -> None:
+    """Render one full generated listing: title/bullets, variations, and the
+    translated section if present. Used by Single Product's persisted results
+    AND by the History tab, so both show the same complete picture."""
+    if include_title_bullets:
+        limit = PLATFORM_TITLE_LIMITS.get(platform, 150)
+        title = result.get("title", "")
+        over_limit = len(title) > limit
+        st.markdown(f"**Title** {'🔴' if over_limit else '🟢'} ({len(title)}/{limit} characters)")
+        st.code(title, language=None)
+        st.markdown("**Feature bullets**")
+        for b in result.get("bullets", []):
+            st.markdown(f"- {b}")
+        st.divider()
+
+    for i, text in enumerate(result.get("variations", []), start=1):
+        render_variation(text, f"Version {i}", banned_words, key=f"{key_prefix}_main_{i}")
+
+    if target_language and result.get("translated"):
+        st.subheader(f"🌐 {target_language} version")
+        translated = result["translated"]
+
+        if include_title_bullets:
+            t_title = translated.get("title", "")
+            st.markdown(f"**Title** ({len(t_title)} characters)")
+            st.code(t_title, language=None)
+            st.markdown("**Feature bullets**")
+            for b in translated.get("bullets", []):
+                st.markdown(f"- {b}")
+            st.divider()
+
+        for i, text in enumerate(translated.get("variations", []), start=1):
+            render_variation(
+                text,
+                f"{target_language} Version {i}",
+                banned_words,
+                key=f"{key_prefix}_tr_{i}",
+            )
 
 
 # ===========================================================================
@@ -201,8 +280,6 @@ with tab_single:
         if not product_name.strip() and not details.strip() and not uploaded_files:
             st.warning("Add a product name, some details, or a photo first.")
         else:
-            from prompts import build_user_prompt
-
             image_blocks = build_image_blocks(uploaded_files)
             user_prompt = build_user_prompt(
                 product_name=product_name,
@@ -228,68 +305,60 @@ with tab_single:
                         target_language=target_language,
                     )
                 add_to_session_cost(estimate_cost(model_id, usage))
-            except anthropic.AuthenticationError:
-                st.error("Your API key was rejected. Check the value in your .env file.")
-                st.stop()
-            except anthropic.RateLimitError:
-                st.error("Rate limited by the API. Wait a moment and try again.")
-                st.stop()
-            except anthropic.APIError as e:
-                st.error(f"The API returned an error: {e.message}")
-                st.stop()
 
-            st.subheader("Results")
+                # Persist everything needed to re-render, so the result survives
+                # a rerun triggered by some OTHER widget (see module docstring).
+                st.session_state["single_result"] = {
+                    "result": result,
+                    "banned_words": banned_words,
+                    "include_title_bullets": include_title_bullets,
+                    "target_language": target_language,
+                    "platform": platform,
+                }
 
-            if include_title_bullets:
-                limit = PLATFORM_TITLE_LIMITS.get(platform, 150)
-                title = result.get("title", "")
-                over_limit = len(title) > limit
-                st.markdown(
-                    f"**Title** {'🔴' if over_limit else '🟢'} "
-                    f"({len(title)}/{limit} characters)"
-                )
-                st.code(title, language=None)
-                st.markdown("**Feature bullets**")
-                for b in result.get("bullets", []):
-                    st.markdown(f"- {b}")
-                st.divider()
-
-            for i, text in enumerate(result.get("variations", []), start=1):
-                render_variation(text, f"Version {i}", banned_words, key=f"main_{i}")
-
-            if target_language and result.get("translated"):
-                st.subheader(f"🌐 {target_language} version")
-                translated = result["translated"]
-
-                if include_title_bullets:
-                    t_title = translated.get("title", "")
-                    st.markdown(f"**Title** ({len(t_title)} characters)")
-                    st.code(t_title, language=None)
-                    st.markdown("**Feature bullets**")
-                    for b in translated.get("bullets", []):
-                        st.markdown(f"- {b}")
-                    st.divider()
-
-                for i, text in enumerate(translated.get("variations", []), start=1):
-                    render_variation(
-                        text, f"{target_language} Version {i}", banned_words, key=f"tr_{i}"
+                # Save to history (best effort - never block the UI on this).
+                try:
+                    append_entry(
+                        {
+                            "product_name": product_name or "(untitled)",
+                            "style": style,
+                            "platform": platform,
+                            "length": length,
+                            "model": model_label,
+                            "brand_profile": chosen_profile,
+                            "banned_words": banned_words,
+                            "include_title_bullets": include_title_bullets,
+                            "target_language": target_language,
+                            "result": result,
+                        }
                     )
+                except Exception:
+                    pass
 
-            # Save to history (best effort - never block the UI on a history write)
-            try:
-                append_entry(
-                    {
-                        "product_name": product_name or "(untitled)",
-                        "style": style,
-                        "platform": platform,
-                        "length": length,
-                        "model": model_label,
-                        "brand_profile": chosen_profile,
-                        "result": result,
-                    }
-                )
-            except Exception:
-                pass
+                # Rerun so the sidebar's cost metric (rendered at the TOP of the
+                # script, before this code runs) picks up the new total right
+                # away instead of showing it one interaction late.
+                st.rerun()
+            except (
+                anthropic.AuthenticationError,
+                anthropic.RateLimitError,
+                anthropic.APIConnectionError,
+                GenerationError,
+                anthropic.APIError,
+            ) as e:
+                handle_generation_error(e)
+
+    saved_single = st.session_state.get("single_result")
+    if saved_single:
+        st.subheader("Results")
+        render_listing_result(
+            result=saved_single["result"],
+            banned_words=saved_single["banned_words"],
+            include_title_bullets=saved_single["include_title_bullets"],
+            platform=saved_single["platform"],
+            target_language=saved_single["target_language"],
+            key_prefix="single",
+        )
 
 
 # ===========================================================================
@@ -377,26 +446,44 @@ with tab_batch:
                         )
                         add_to_session_cost(total_cost)
                         progress_bar.progress(1.0, text="Done!")
+                        st.session_state["batch_result"] = {
+                            "df": result_df,
+                            "cost": total_cost,
+                        }
+                        # Same reason as Single Product: rerun so the sidebar's
+                        # cost metric reflects the new total immediately.
+                        st.rerun()
+                    except (
+                        anthropic.AuthenticationError,
+                        anthropic.RateLimitError,
+                        anthropic.APIConnectionError,
+                        GenerationError,
+                        anthropic.APIError,
+                    ) as e:
+                        handle_generation_error(e)
 
-                        error_count = (result_df["error"] != "").sum()
-                        if error_count:
-                            st.warning(
-                                f"{error_count} row(s) had an error and are marked in the "
-                                "'error' column - the rest completed fine."
-                            )
-                        st.success(
-                            f"Generated {len(result_df) - error_count} description(s). "
-                            f"Estimated cost: {format_cost(total_cost)}."
-                        )
-                        st.dataframe(result_df, use_container_width=True)
-                        st.download_button(
-                            "⬇️ Download results as CSV",
-                            data=result_df.to_csv(index=False),
-                            file_name="product_descriptions.csv",
-                            mime="text/csv",
-                        )
-                    except anthropic.AuthenticationError:
-                        st.error("Your API key was rejected. Check your .env file.")
+    saved_batch = st.session_state.get("batch_result")
+    if saved_batch is not None:
+        result_df = saved_batch["df"]
+        total_cost = saved_batch["cost"]
+        error_count = (result_df["error"] != "").sum()
+        if error_count:
+            st.warning(
+                f"{error_count} row(s) had an error and are marked in the "
+                "'error' column - the rest completed fine."
+            )
+        st.success(
+            f"Generated {len(result_df) - error_count} description(s). "
+            f"Estimated cost: {format_cost(total_cost)}."
+        )
+        st.dataframe(result_df, use_container_width=True)
+        st.download_button(
+            "⬇️ Download results as CSV",
+            data=result_df.to_csv(index=False),
+            file_name="product_descriptions.csv",
+            mime="text/csv",
+            key="batch_dl",
+        )
 
 
 # ===========================================================================
@@ -454,20 +541,26 @@ with tab_brand:
 
     col_save, col_delete = st.columns(2)
     if col_save.button("💾 Save profile", type="primary", use_container_width=True):
-        if not profile_name.strip():
+        new_name = profile_name.strip()
+        if not new_name:
             st.warning("Give the profile a name first.")
         else:
             save_profile(
-                profile_name.strip(),
+                new_name,
                 {
-                    "brand_name": profile_name.strip(),
+                    "brand_name": new_name,
                     "tone_description": tone_description,
                     "banned_words": parse_comma_list(banned_words_raw),
                     "preferred_phrases": parse_comma_list(preferred_phrases_raw),
                     "extra_instructions": extra_instructions,
                 },
             )
-            st.success(f"Saved '{profile_name.strip()}'.")
+            # Renamed an existing profile? Remove the old entry so we don't
+            # end up with both "Cabin Co." and "Cabin Co V2" side by side.
+            if is_existing and editing != new_name:
+                delete_profile(editing)
+            st.session_state["_bv_last_loaded"] = None
+            st.success(f"Saved '{new_name}'.")
             st.rerun()
 
     if is_existing:
@@ -503,8 +596,11 @@ with tab_history:
                     f"Model: {entry.get('model', '-')} - "
                     f"Brand voice: {entry.get('brand_profile', '(none)')}"
                 )
-                result = entry.get("result", {})
-                if result.get("title"):
-                    st.markdown(f"**Title:** {result['title']}")
-                for j, text in enumerate(result.get("variations", []), start=1):
-                    st.code(text, language=None, wrap_lines=True)
+                render_listing_result(
+                    result=entry.get("result", {}),
+                    banned_words=entry.get("banned_words", []),
+                    include_title_bullets=entry.get("include_title_bullets", False),
+                    platform=entry.get("platform", ""),
+                    target_language=entry.get("target_language"),
+                    key_prefix=f"hist_{i}",
+                )

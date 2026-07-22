@@ -19,6 +19,16 @@ from prompts import build_user_prompt
 REQUIRED_COLUMNS = ["product_name", "details"]
 
 
+def _clean_cell(value) -> str:
+    """Turn a pandas cell into a safe string. A blank CSV cell comes through as
+    NaN (a float), and str(NaN) is the literal text "nan" - that would get fed
+    straight into the prompt as if it were real product info, so treat any
+    NaN/None cell as an empty string instead."""
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
 def make_template_csv() -> str:
     """A starter CSV the user can download, fill in, and re-upload."""
     df = pd.DataFrame(
@@ -77,8 +87,8 @@ def run_batch(
     total_rows = len(result_df)
 
     for position, (idx, row) in enumerate(result_df.iterrows(), start=1):
-        product_name = str(row.get("product_name", "")).strip()
-        details = str(row.get("details", "")).strip()
+        product_name = _clean_cell(row.get("product_name", ""))
+        details = _clean_cell(row.get("details", ""))
 
         try:
             prompt = build_user_prompt(
@@ -103,15 +113,17 @@ def run_batch(
             )
             total_cost += estimate_cost(model_id, usage)
 
-            result_df.at[idx, "description"] = result["variations"][0]
+            # `or [""]` guards both "key missing" AND "key present but empty" -
+            # a plain .get(key, [""]) only covers the first case.
+            result_df.at[idx, "description"] = (result.get("variations") or [""])[0]
             if include_title_bullets:
                 result_df.at[idx, "title"] = result.get("title", "")
                 result_df.at[idx, "bullets"] = " | ".join(result.get("bullets", []))
             if target_language:
                 translated = result.get("translated", {})
                 result_df.at[idx, "translated_description"] = (
-                    translated.get("variations", [""])[0]
-                )
+                    translated.get("variations") or [""]
+                )[0]
                 if include_title_bullets:
                     result_df.at[idx, "translated_title"] = translated.get("title", "")
                     result_df.at[idx, "translated_bullets"] = " | ".join(
